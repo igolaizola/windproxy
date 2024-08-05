@@ -1,22 +1,15 @@
-FROM --platform=$BUILDPLATFORM golang AS build
+# builder image
+FROM golang:alpine as builder
+ARG TARGETPLATFORM
+COPY . /src
+WORKDIR /src
+RUN apk add --no-cache make bash git
+RUN make app-build PLATFORMS=$TARGETPLATFORM
 
-ARG GIT_DESC=undefined
+# running image
+FROM alpine
+WORKDIR /home
+COPY --from=builder /src/bin/windproxy-* /bin/windproxy
 
-WORKDIR /go/src/github.com/Snawoot/windscribe-proxy
-COPY . .
-ARG TARGETOS TARGETARCH
-RUN GOOS=$TARGETOS GOARCH=$TARGETARCH CGO_ENABLED=0 go build -a -tags netgo -ldflags '-s -w -extldflags "-static" -X main.version='"$GIT_DESC"
-ADD https://curl.haxx.se/ca/cacert.pem /certs.crt
-RUN chmod 0644 /certs.crt
-RUN mkdir /state
-
-FROM scratch AS arrange
-COPY --from=build /go/src/github.com/Snawoot/windscribe-proxy/windscribe-proxy /
-COPY --from=build /certs.crt /etc/ssl/certs/ca-certificates.crt
-COPY --from=build --chown=9999:9999 /state /state
-
-FROM scratch
-COPY --from=arrange / /
-USER 9999:9999
-EXPOSE 18080/tcp
-ENTRYPOINT ["/windscribe-proxy", "-state-file", "/state/wndstate.json", "-bind-address", "0.0.0.0:28080"]
+# executable
+ENTRYPOINT [ "/bin/windproxy" ]

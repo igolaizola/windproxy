@@ -1,4 +1,4 @@
-module github.com/Snawoot/windscribe-proxy
+module github.com/igolaizola/windproxy
 
 go 1.21.1
 
@@ -6,6 +6,7 @@ require (
 	github.com/AdguardTeam/dnsproxy v0.56.0
 	github.com/jellydator/ttlcache/v2 v2.11.1
 	github.com/miekg/dns v1.1.56
+	github.com/peterbourgon/ff/v3 v3.4.0
 	golang.org/x/net v0.16.0
 )
 
@@ -29,4 +30,5 @@ require (
 	golang.org/x/sys v0.13.0 // indirect
 	golang.org/x/text v0.13.0 // indirect
 	golang.org/x/tools v0.14.0 // indirect
+	gopkg.in/yaml.v2 v2.4.0 // indirect
 )

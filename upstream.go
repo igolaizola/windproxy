@@ -1,4 +1,4 @@
-package main
+package windproxy
 
 import (
 	"bufio"
@@ -32,22 +32,20 @@ type ContextDialer interface {
 }
 
 type ProxyDialer struct {
-	address       string
-	tlsServerName string
-	auth          AuthProvider
-	next          ContextDialer
-	caPool        *x509.CertPool
-	sni           string
+	getAddress func() (address, tlsServerName string)
+	auth       AuthProvider
+	next       ContextDialer
+	caPool     *x509.CertPool
+	sni        string
 }
 
-func NewProxyDialer(address, tlsServerName, sni string, auth AuthProvider, caPool *x509.CertPool, nextDialer ContextDialer) *ProxyDialer {
+func NewProxyDialer(getAddress func() (address, tlsServerName string), sni string, auth AuthProvider, caPool *x509.CertPool, nextDialer ContextDialer) *ProxyDialer {
 	return &ProxyDialer{
-		address:       address,
-		tlsServerName: tlsServerName,
-		auth:          auth,
-		next:          nextDialer,
-		caPool:        caPool,
-		sni:           sni,
+		getAddress: getAddress,
+		auth:       auth,
+		next:       nextDialer,
+		caPool:     caPool,
+		sni:        sni,
 	}
 }
 
@@ -81,7 +79,10 @@ func ProxyDialerFromURL(u *url.URL, next ContextDialer) (*ProxyDialer, error) {
 			return authHeader
 		}
 	}
-	return NewProxyDialer(address, tlsServerName, "", auth, nil, next), nil
+	getAddress := func() (string, string) {
+		return address, tlsServerName
+	}
+	return NewProxyDialer(getAddress, "", auth, nil, next), nil
 }
 
 func (d *ProxyDialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
@@ -91,12 +92,14 @@ func (d *ProxyDialer) DialContext(ctx context.Context, network, address string) 
 		return nil, errors.New("bad network specified for DialContext: only tcp is supported")
 	}
 
-	conn, err := d.next.DialContext(ctx, "tcp", d.address)
+	addr, serverName := d.getAddress()
+
+	conn, err := d.next.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return nil, err
 	}
 
-	if d.tlsServerName != "" {
+	if serverName != "" {
 		// Custom cert verification logic:
 		// DO NOT send SNI extension of TLS ClientHello
 		// DO peer certificate verification against specified servername
@@ -106,7 +109,7 @@ func (d *ProxyDialer) DialContext(ctx context.Context, network, address string) 
 			InsecureSkipVerify: true,
 			VerifyConnection: func(cs tls.ConnectionState) error {
 				opts := x509.VerifyOptions{
-					DNSName:       d.tlsServerName,
+					DNSName:       serverName,
 					Intermediates: x509.NewCertPool(),
 					Roots:         d.caPool,
 				}
@@ -151,7 +154,7 @@ func (d *ProxyDialer) DialContext(ctx context.Context, network, address string) 
 	}
 
 	if proxyResp.StatusCode != http.StatusOK {
-		return nil, errors.New(fmt.Sprintf("bad response from upstream proxy server: %s", proxyResp.Status))
+		return nil, fmt.Errorf("bad response from upstream proxy server: %s", proxyResp.Status)
 	}
 
 	return conn, nil
@@ -229,9 +232,6 @@ func (d *FakeSNIDialer) DialTLSContext(ctx context.Context, network, addr string
 			_, err := cs.PeerCertificates[0].Verify(opts)
 			return err
 		},
-	}
-	if err != nil {
-		return conn, err
 	}
 	return tls.Client(conn, tlsConfig), nil
 }

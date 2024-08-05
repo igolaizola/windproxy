@@ -1,4 +1,4 @@
-package main
+package windproxy
 
 import (
 	"bufio"
@@ -26,7 +26,7 @@ func proxy(ctx context.Context, left, right net.Conn) {
 	wg := sync.WaitGroup{}
 	cpy := func(dst, src net.Conn) {
 		defer wg.Done()
-		io.Copy(dst, src)
+		_, _ = io.Copy(dst, src)
 		dst.Close()
 	}
 	wg.Add(2)
@@ -45,14 +45,13 @@ func proxy(ctx context.Context, left, right net.Conn) {
 		return
 	}
 	<-groupdone
-	return
 }
 
 func proxyh2(ctx context.Context, leftreader io.ReadCloser, leftwriter io.Writer, right net.Conn) {
 	wg := sync.WaitGroup{}
 	ltr := func(dst net.Conn, src io.Reader) {
 		defer wg.Done()
-		io.Copy(dst, src)
+		_, _ = io.Copy(dst, src)
 		dst.Close()
 	}
 	rtl := func(dst io.Writer, src io.Reader) {
@@ -75,7 +74,6 @@ func proxyh2(ctx context.Context, leftreader io.ReadCloser, leftwriter io.Writer
 		return
 	}
 	<-groupdone
-	return
 }
 
 // Hop-by-hop headers. These are removed when sent to the backend.
@@ -108,7 +106,7 @@ func delHopHeaders(header http.Header) {
 func hijack(hijackable interface{}) (net.Conn, *bufio.ReadWriter, error) {
 	hj, ok := hijackable.(http.Hijacker)
 	if !ok {
-		return nil, nil, errors.New("Connection doesn't support hijacking")
+		return nil, nil, errors.New("connection doesn't support hijacking")
 	}
 	conn, rw, err := hj.Hijack()
 	if err != nil {
@@ -169,22 +167,4 @@ func AfterWallClock(d time.Duration) <-chan time.Time {
 		}
 	}()
 	return ch
-}
-
-func runTicker(ctx context.Context, interval, retryInterval time.Duration, cb func(context.Context) error) {
-	go func() {
-		var err error
-		for {
-			nextInterval := interval
-			if err != nil {
-				nextInterval = retryInterval
-			}
-			select {
-			case <-ctx.Done():
-				return
-			case <-AfterWallClock(nextInterval):
-				err = cb(ctx)
-			}
-		}
-	}()
 }

@@ -1,4 +1,4 @@
-package wndclient
+package windscribe
 
 type RegisterTokenRequest struct {
 	ClientAuthHash string `json:"client_auth_hash"`

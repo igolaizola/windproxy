@@ -1,4 +1,4 @@
-package main
+package windproxy
 
 import (
 	"errors"
@@ -17,7 +17,7 @@ type LogWriter struct {
 
 func (lw *LogWriter) Write(p []byte) (int, error) {
 	if p == nil {
-		return 0, errors.New("Can't write nil byte slice")
+		return 0, errors.New("can't write nil byte slice")
 	}
 	buf := make([]byte, len(p))
 	copy(buf, p)
@@ -25,7 +25,7 @@ func (lw *LogWriter) Write(p []byte) (int, error) {
 	case lw.ch <- buf:
 		return len(p), nil
 	default:
-		return 0, errors.New("Writer queue overflow")
+		return 0, errors.New("writer queue overflow")
 	}
 }
 
@@ -42,7 +42,7 @@ func (lw *LogWriter) loop() {
 		if p == nil {
 			break
 		}
-		lw.writer.Write(p)
+		_, _ = lw.writer.Write(p)
 	}
 	lw.done <- struct{}{}
 }

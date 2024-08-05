@@ -1,0 +1,14 @@
+builds:
+  - id: windproxy
+    binary: windproxy
+    main: ./cmd/windproxy
+    goarch:
+      - amd64
+      - arm64
+      - arm
+archives:
+  - id: windproxy
+    builds:
+      - windproxy
+    format: zip
+    name_template: 'windproxy_{{ .Version }}_{{- if eq .Os "darwin" }}macos{{- else }}{{ .Os }}{{ end }}_{{ .Arch }}'

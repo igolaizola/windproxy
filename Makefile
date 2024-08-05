@@ -1,176 +1,74 @@
-PROGNAME = windscribe-proxy
-OUTSUFFIX = bin/$(PROGNAME)
-VERSION := $(shell git describe)
-BUILDOPTS = -a -tags netgo -trimpath -asmflags -trimpath
-LDFLAGS = -ldflags '-s -w -extldflags "-static" -X main.version=$(VERSION)'
-LDFLAGS_NATIVE = -ldflags '-s -w -X main.version=$(VERSION)'
+#!/bin/bash
 
-NDK_CC_ARM = $(abspath ../../ndk-toolchain-arm/bin/arm-linux-androideabi-gcc)
-NDK_CC_ARM64 = $(abspath ../../ndk-toolchain-arm64/bin/aarch64-linux-android21-clang)
+SHELL             = /bin/bash
+PLATFORMS        ?= linux/amd64 darwin/amd64 windows/amd64
+IMAGE_PREFIX     ?= igolaizola
+REPO_NAME		 ?= windproxy
+COMMIT_SHORT     ?= $(shell git rev-parse --verify --short HEAD)
+VERSION          ?= $(COMMIT_SHORT)
+VERSION_NOPREFIX ?= $(shell echo $(VERSION) | sed -e 's/^[[v]]*//')
 
-GO := go
+# Build the binaries for the current platform
+.PHONY: build
+build:
+	os=$$(go env GOOS); \
+	arch=$$(go env GOARCH); \
+	PLATFORMS="$$os/$$arch" make app-build
 
-src = $(wildcard *.go */*.go */*/*.go) go.mod go.sum
+# Build the binaries
+# Example: PLATFORMS=linux/amd64 make app-build
+.PHONY: app-build
+app-build:
+	@for platform in $(PLATFORMS) ; do \
+		os=$$(echo $$platform | cut -f1 -d/); \
+		arch=$$(echo $$platform | cut -f2 -d/); \
+		arm=$$(echo $$platform | cut -f3 -d/); \
+		arm=$${arm#v}; \
+		ext=""; \
+		if [ "$$os" == "windows" ]; then \
+			ext=".exe"; \
+		fi; \
+		file=./bin/$(REPO_NAME)-$(VERSION_NOPREFIX)-$$(echo $$platform | tr / -)$$ext; \
+		GOOS=$$os GOARCH=$$arch GOARM=$$arm CGO_ENABLED=0 \
+		go build \
+			-a -x -tags netgo,timetzdata -installsuffix cgo -installsuffix netgo \
+			-ldflags " \
+				-X main.Version=$(VERSION_NOPREFIX) \
+				-X main.GitRev=$(COMMIT_SHORT) \
+			" \
+			-o $$file \
+			./cmd/$(REPO_NAME); \
+		if [ $$? -ne 0 ]; then \
+			exit 1; \
+		fi; \
+		chmod +x $$file; \
+	done
 
-native: bin-native
-all: bin-linux-amd64 bin-linux-386 bin-linux-arm bin-linux-arm64 \
-	bin-linux-mips bin-linux-mipsle bin-linux-mips64 bin-linux-mips64le \
-	bin-freebsd-amd64 bin-freebsd-386 bin-freebsd-arm bin-freebsd-arm64 \
-	bin-netbsd-amd64 bin-netbsd-386 bin-netbsd-arm bin-netbsd-arm64 \
-	bin-openbsd-amd64 bin-openbsd-386 bin-openbsd-arm bin-openbsd-arm64 \
-	bin-darwin-amd64 bin-darwin-arm64 \
-	bin-windows-amd64 bin-windows-386 bin-windows-arm
+# Build the docker image
+# Example: PLATFORMS=linux/amd64 make docker-build
+.PHONY: docker-build
+docker-build:
+	rm -rf bin; \
+	@platforms=($(PLATFORMS)); \
+	platform=$${platforms[0]}; \
+	if [[ $${#platforms[@]} -ne 1 ]]; then \
+    	echo "Multi-arch build not supported"; \
+		exit 1; \
+	fi; \
+	docker build --platform $$platform -t $(IMAGE_PREFIX)/$(REPO_NAME):$(VERSION) .; \
+	if [ $$? -ne 0 ]; then \
+		exit 1; \
+	fi
 
-allplus: all \
-	bin-android-arm bin-android-arm64
+# Build the docker images using buildx
+# Example: PLATFORMS="linux/amd64 darwin/amd64 windows/amd64" make docker-buildx
+.PHONY: docker-buildx
+docker-buildx:
+	@platforms=($(PLATFORMS)); \
+	platform=$$(IFS=, ; echo "$${platforms[*]}"); \
+	docker buildx build --platform $$platform -t $(IMAGE_PREFIX)/$(REPO_NAME):$(VERSION) .
 
-bin-native: $(OUTSUFFIX)
-bin-linux-amd64: $(OUTSUFFIX).linux-amd64
-bin-linux-386: $(OUTSUFFIX).linux-386
-bin-linux-arm: $(OUTSUFFIX).linux-arm
-bin-linux-arm64: $(OUTSUFFIX).linux-arm64
-bin-linux-mips: $(OUTSUFFIX).linux-mips
-bin-linux-mipsle: $(OUTSUFFIX).linux-mipsle
-bin-linux-mips64: $(OUTSUFFIX).linux-mips64
-bin-linux-mips64le: $(OUTSUFFIX).linux-mips64le
-bin-freebsd-amd64: $(OUTSUFFIX).freebsd-amd64
-bin-freebsd-386: $(OUTSUFFIX).freebsd-386
-bin-freebsd-arm: $(OUTSUFFIX).freebsd-arm
-bin-freebsd-arm64: $(OUTSUFFIX).freebsd-arm64
-bin-netbsd-amd64: $(OUTSUFFIX).netbsd-amd64
-bin-netbsd-386: $(OUTSUFFIX).netbsd-386
-bin-netbsd-arm: $(OUTSUFFIX).netbsd-arm
-bin-netbsd-arm64: $(OUTSUFFIX).netbsd-arm64
-bin-openbsd-amd64: $(OUTSUFFIX).openbsd-amd64
-bin-openbsd-386: $(OUTSUFFIX).openbsd-386
-bin-openbsd-arm: $(OUTSUFFIX).openbsd-arm
-bin-openbsd-arm64: $(OUTSUFFIX).openbsd-arm64
-bin-darwin-amd64: $(OUTSUFFIX).darwin-amd64
-bin-darwin-arm64: $(OUTSUFFIX).darwin-arm64
-bin-windows-amd64: $(OUTSUFFIX).windows-amd64.exe
-bin-windows-386: $(OUTSUFFIX).windows-386.exe
-bin-windows-arm: $(OUTSUFFIX).windows-arm.exe
-bin-android-arm: $(OUTSUFFIX).android-arm
-bin-android-arm64: $(OUTSUFFIX).android-arm64
-
-$(OUTSUFFIX): $(src)
-	$(GO) build $(LDFLAGS_NATIVE) -o $@
-
-$(OUTSUFFIX).linux-amd64: $(src)
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GO) build $(BUILDOPTS) $(LDFLAGS) -o $@
-
-$(OUTSUFFIX).linux-386: $(src)
-	CGO_ENABLED=0 GOOS=linux GOARCH=386 $(GO) build $(BUILDOPTS) $(LDFLAGS) -o $@
-
-$(OUTSUFFIX).linux-arm: $(src)
-	CGO_ENABLED=0 GOOS=linux GOARCH=arm $(GO) build $(BUILDOPTS) $(LDFLAGS) -o $@
-
-$(OUTSUFFIX).linux-arm64: $(src)
-	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GO) build $(BUILDOPTS) $(LDFLAGS) -o $@
-
-$(OUTSUFFIX).linux-mips: $(src)
-	CGO_ENABLED=0 GOOS=linux GOARCH=mips GOMIPS=softfloat $(GO) build $(BUILDOPTS) $(LDFLAGS) -o $@
-
-$(OUTSUFFIX).linux-mips64: $(src)
-	CGO_ENABLED=0 GOOS=linux GOARCH=mips64 GOMIPS=softfloat $(GO) build $(BUILDOPTS) $(LDFLAGS) -o $@
-
-$(OUTSUFFIX).linux-mipsle: $(src)
-	CGO_ENABLED=0 GOOS=linux GOARCH=mipsle GOMIPS=softfloat $(GO) build $(BUILDOPTS) $(LDFLAGS) -o $@
-
-$(OUTSUFFIX).linux-mips64le: $(src)
-	CGO_ENABLED=0 GOOS=linux GOARCH=mips64le GOMIPS=softfloat $(GO) build $(BUILDOPTS) $(LDFLAGS) -o $@
-
-$(OUTSUFFIX).freebsd-amd64: $(src)
-	CGO_ENABLED=0 GOOS=freebsd GOARCH=amd64 $(GO) build $(BUILDOPTS) $(LDFLAGS) -o $@
-
-$(OUTSUFFIX).freebsd-386: $(src)
-	CGO_ENABLED=0 GOOS=freebsd GOARCH=386 $(GO) build $(BUILDOPTS) $(LDFLAGS) -o $@
-
-$(OUTSUFFIX).freebsd-arm: $(src)
-	CGO_ENABLED=0 GOOS=freebsd GOARCH=arm $(GO) build $(BUILDOPTS) $(LDFLAGS) -o $@
-
-$(OUTSUFFIX).freebsd-arm64: $(src)
-	CGO_ENABLED=0 GOOS=freebsd GOARCH=arm64 $(GO) build $(BUILDOPTS) $(LDFLAGS) -o $@
-
-$(OUTSUFFIX).netbsd-amd64: $(src)
-	CGO_ENABLED=0 GOOS=netbsd GOARCH=amd64 $(GO) build $(BUILDOPTS) $(LDFLAGS) -o $@
-
-$(OUTSUFFIX).netbsd-386: $(src)
-	CGO_ENABLED=0 GOOS=netbsd GOARCH=386 $(GO) build $(BUILDOPTS) $(LDFLAGS) -o $@
-
-$(OUTSUFFIX).netbsd-arm: $(src)
-	CGO_ENABLED=0 GOOS=netbsd GOARCH=arm $(GO) build $(BUILDOPTS) $(LDFLAGS) -o $@
-
-$(OUTSUFFIX).netbsd-arm64: $(src)
-	CGO_ENABLED=0 GOOS=netbsd GOARCH=arm64 $(GO) build $(BUILDOPTS) $(LDFLAGS) -o $@
-
-$(OUTSUFFIX).openbsd-amd64: $(src)
-	CGO_ENABLED=0 GOOS=openbsd GOARCH=amd64 $(GO) build $(BUILDOPTS) $(LDFLAGS) -o $@
-
-$(OUTSUFFIX).openbsd-386: $(src)
-	CGO_ENABLED=0 GOOS=openbsd GOARCH=386 $(GO) build $(BUILDOPTS) $(LDFLAGS) -o $@
-
-$(OUTSUFFIX).openbsd-arm: $(src)
-	CGO_ENABLED=0 GOOS=openbsd GOARCH=arm $(GO) build $(BUILDOPTS) $(LDFLAGS) -o $@
-
-$(OUTSUFFIX).openbsd-arm64: $(src)
-	CGO_ENABLED=0 GOOS=openbsd GOARCH=arm64 $(GO) build $(BUILDOPTS) $(LDFLAGS) -o $@
-
-$(OUTSUFFIX).darwin-amd64: $(src)
-	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 $(GO) build $(BUILDOPTS) $(LDFLAGS) -o $@
-
-$(OUTSUFFIX).darwin-arm64: $(src)
-	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 $(GO) build $(BUILDOPTS) $(LDFLAGS) -o $@
-
-$(OUTSUFFIX).windows-amd64.exe: $(src)
-	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GO) build $(BUILDOPTS) $(LDFLAGS) -o $@
-
-$(OUTSUFFIX).windows-386.exe: $(src)
-	CGO_ENABLED=0 GOOS=windows GOARCH=386 $(GO) build $(BUILDOPTS) $(LDFLAGS) -o $@
-
-$(OUTSUFFIX).windows-arm.exe: $(src)
-	CGO_ENABLED=0 GOOS=windows GOARCH=arm GOARM=7 $(GO) build $(BUILDOPTS) $(LDFLAGS) -o $@
-
-$(OUTSUFFIX).android-arm: $(src)
-	CC=$(NDK_CC_ARM) CGO_ENABLED=1 GOOS=android GOARCH=arm GOARM=7 $(GO) build $(LDFLAGS_NATIVE) -o $@
-
-$(OUTSUFFIX).android-arm64: $(src)
-	CC=$(NDK_CC_ARM64) CGO_ENABLED=1 GOOS=android GOARCH=arm64 $(GO) build $(LDFLAGS_NATIVE) -o $@
-
+# Clean binaries
+.PHONY: clean
 clean:
-	rm -f bin/*
-
-fmt:
-	$(GO) fmt ./...
-
-run:
-	$(GO) run $(LDFLAGS) .
-
-install:
-	$(GO) install $(LDFLAGS_NATIVE) .
-
-.PHONY: clean all native fmt install \
-	bin-native \
-	bin-linux-amd64 \
-	bin-linux-386 \
-	bin-linux-arm \
-	bin-linux-arm64 \
-	bin-freebsd-amd64 \
-	bin-freebsd-386 \
-	bin-freebsd-arm \
-	bin-freebsd-arm64 \
-	bin-netbsd-amd64 \
-	bin-netbsd-386 \
-	bin-netbsd-arm \
-	bin-netbsd-arm64 \
-	bin-openbsd-amd64 \
-	bin-openbsd-386 \
-	bin-openbsd-arm \
-	bin-openbsd-arm64 \
-	bin-darwin-amd64 \
-	bin-darwin-arm64 \
-	bin-windows-amd64 \
-	bin-windows-386 \
-	bin-windows-arm \
-	bin-android-arm \
-	bin-android-arm64
+	rm -rf bin

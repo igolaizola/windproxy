@@ -1,4 +1,4 @@
-package wndclient
+package windscribe
 
 import (
 	"crypto/md5"

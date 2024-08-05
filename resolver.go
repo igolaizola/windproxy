@@ -1,4 +1,4 @@
-package main
+package windproxy
 
 import (
 	"context"
@@ -13,7 +13,6 @@ import (
 )
 
 type Resolver struct {
-	upstream upstream.Upstream
 }
 
 const (
@@ -55,12 +54,12 @@ func NewResolvingDialer(resolverAddress string, timeout time.Duration, next Cont
 }
 
 func (d *ResolvingDialer) resolveA(domain string) (interface{}, time.Duration, error) {
-	d.logger.Debug("resolveA(%#v)", domain)
+	_ = d.logger.Debug("resolveA(%#v)", domain)
 	return d.resolve(domain, dns.TypeA)
 }
 
 func (d *ResolvingDialer) resolveAAAA(domain string) (interface{}, time.Duration, error) {
-	d.logger.Debug("resolveAAAA(%#v)", domain)
+	_ = d.logger.Debug("resolveAAAA(%#v)", domain)
 	return d.resolve(domain, dns.TypeAAAA)
 }
 
@@ -128,7 +127,7 @@ func (d *ResolvingDialer) DialContext(ctx context.Context, network, address stri
 		name = res.(string)
 	}
 	newAddress := net.JoinHostPort(name, port)
-	d.logger.Debug("resolve rewrite: %s => %s", address, newAddress)
+	_ = d.logger.Debug("resolve rewrite: %s => %s", address, newAddress)
 	return d.next.DialContext(ctx, network, newAddress)
 }
 

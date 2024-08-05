@@ -1,4 +1,4 @@
-package main
+package windproxy
 
 import (
 	"fmt"
@@ -15,9 +15,11 @@ type ProxyHandler struct {
 	logger        *CondLogger
 	dialer        ContextDialer
 	httptransport http.RoundTripper
+	refreshC      chan<- struct{}
+	refreshPath   string
 }
 
-func NewProxyHandler(dialer ContextDialer, logger *CondLogger) *ProxyHandler {
+func NewProxyHandler(dialer ContextDialer, logger *CondLogger, refreshC chan<- struct{}, refreshPath string) *ProxyHandler {
 	httptransport := &http.Transport{
 		MaxIdleConns:          100,
 		IdleConnTimeout:       90 * time.Second,
@@ -29,6 +31,8 @@ func NewProxyHandler(dialer ContextDialer, logger *CondLogger) *ProxyHandler {
 		logger:        logger,
 		dialer:        dialer,
 		httptransport: httptransport,
+		refreshC:      refreshC,
+		refreshPath:   refreshPath,
 	}
 }
 
@@ -36,7 +40,7 @@ func (s *ProxyHandler) HandleTunnel(wr http.ResponseWriter, req *http.Request) {
 	ctx := req.Context()
 	conn, err := s.dialer.DialContext(ctx, "tcp", req.RequestURI)
 	if err != nil {
-		s.logger.Error("Can't satisfy CONNECT request: %v", err)
+		_ = s.logger.Error("Can't satisfy CONNECT request: %v", err)
 		http.Error(wr, "Can't satisfy CONNECT request", http.StatusBadGateway)
 		return
 	}
@@ -45,7 +49,7 @@ func (s *ProxyHandler) HandleTunnel(wr http.ResponseWriter, req *http.Request) {
 		// Upgrade client connection
 		localconn, _, err := hijack(wr)
 		if err != nil {
-			s.logger.Error("Can't hijack client connection: %v", err)
+			_ = s.logger.Error("Can't hijack client connection: %v", err)
 			http.Error(wr, "Can't hijack client connection", http.StatusInternalServerError)
 			return
 		}
@@ -61,7 +65,7 @@ func (s *ProxyHandler) HandleTunnel(wr http.ResponseWriter, req *http.Request) {
 		flush(wr)
 		proxyh2(req.Context(), req.Body, wr, conn)
 	} else {
-		s.logger.Error("Unsupported protocol version: %s", req.Proto)
+		_ = s.logger.Error("Unsupported protocol version: %s", req.Proto)
 		http.Error(wr, "Unsupported protocol version.", http.StatusBadRequest)
 		return
 	}
@@ -75,12 +79,12 @@ func (s *ProxyHandler) HandleRequest(wr http.ResponseWriter, req *http.Request) 
 	}
 	resp, err := s.httptransport.RoundTrip(req)
 	if err != nil {
-		s.logger.Error("HTTP fetch error: %v", err)
+		_ = s.logger.Error("HTTP fetch error: %v", err)
 		http.Error(wr, "Server Error", http.StatusInternalServerError)
 		return
 	}
 	defer resp.Body.Close()
-	s.logger.Info("%v %v %v %v", req.RemoteAddr, req.Method, req.URL, resp.Status)
+	_ = s.logger.Info("%v %v %v %v", req.RemoteAddr, req.Method, req.URL, resp.Status)
 	delHopHeaders(resp.Header)
 	copyHeader(wr.Header(), resp.Header)
 	wr.WriteHeader(resp.StatusCode)
@@ -89,7 +93,13 @@ func (s *ProxyHandler) HandleRequest(wr http.ResponseWriter, req *http.Request) 
 }
 
 func (s *ProxyHandler) ServeHTTP(wr http.ResponseWriter, req *http.Request) {
-	s.logger.Info("Request: %v %v %v %v", req.RemoteAddr, req.Proto, req.Method, req.URL)
+	_ = s.logger.Info("Request: %v %v %v %v", req.RemoteAddr, req.Proto, req.Method, req.URL)
+
+	if s.refreshPath != "" && req.Method == "GET" && req.URL.Path == s.refreshPath {
+		s.refreshC <- struct{}{}
+		wr.WriteHeader(http.StatusOK)
+		return
+	}
 
 	isConnect := strings.ToUpper(req.Method) == "CONNECT"
 	if (req.URL.Host == "" || req.URL.Scheme == "" && !isConnect) && req.ProtoMajor < 2 ||

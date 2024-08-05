@@ -1,4 +1,4 @@
-package wndclient
+package windscribe
 
 import (
 	"bytes"
@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"net/url"
 	"path"
@@ -29,80 +28,80 @@ const (
 
 var ErrNoDataInResponse = errors.New("no \"data\" key in response")
 
-type WndEndpoints struct {
+type Endpoints struct {
 	Session           string `json:"Session"`
 	ServerList        string `json:"serverlist"`
 	ServerCredentials string `json:"ServerCredentials"`
 	BestLocation      string `json:"BestLocation"`
 }
 
-var DefaultWndEndpoints = WndEndpoints{
+var DefaultEndpoints = Endpoints{
 	Session:           "https://api.windscribe.com/Session",
 	ServerList:        "https://assets.windscribe.com/serverlist",
 	ServerCredentials: "https://api.windscribe.com/ServerCredentials",
 	BestLocation:      "https://api.windscribe.com/BestLocation",
 }
 
-type WndSettings struct {
-	ClientAuthSecret string       `json:"client_auth_secret"`
-	Platform         string       `json:"platform"`
-	Type             string       `json:"type"`
-	UserAgent        string       `json:"user_agent"`
-	Origin           string       `json:"origin"`
-	SessionType      int          `json:"session_type"`
-	Endpoints        WndEndpoints `json:"endpoints"`
+type Settings struct {
+	ClientAuthSecret string    `json:"client_auth_secret"`
+	Platform         string    `json:"platform"`
+	Type             string    `json:"type"`
+	UserAgent        string    `json:"user_agent"`
+	Origin           string    `json:"origin"`
+	SessionType      int       `json:"session_type"`
+	Endpoints        Endpoints `json:"endpoints"`
 }
 
-var DefaultWndSettings = WndSettings{
+var DefaultSettings = Settings{
 	ClientAuthSecret: "952b4412f002315aa50751032fcaab03",
 	Platform:         "chrome",
 	Type:             "chrome",
 	UserAgent:        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/103.0.5060.53 Safari/537.36",
 	Origin:           "chrome-extension://hnmpcagpplmpfojmgmnngilcnanddlhb",
 	SessionType:      SESSION_TYPE_EXT,
-	Endpoints:        DefaultWndEndpoints,
+	Endpoints:        DefaultEndpoints,
 }
 
-type WndClientState struct {
-	TokenID            string      `json:"token_id"`
-	Token              string      `json:"token"`
-	TokenSignature     string      `json:"token_signature"`
-	TokenSignatureTime int64       `json:"token_signature_time,string"`
-	LocationHash       string      `json:"loc_hash"`
-	LocationRevision   int         `json:"loc_rev"`
-	IsPremium          bool        `json:"is_premium"`
-	Status             int         `json:"status"`
-	UserID             string      `json:"user_id"`
-	SessionAuthHash    string      `json:"session_auth_hash"`
-	ProxyUsername      string      `json:"proxy_username"`
-	ProxyPassword      string      `json:"proxy_password"`
-	Settings           WndSettings `json:"settings"`
+type ClientState struct {
+	TokenID            string   `json:"token_id"`
+	Token              string   `json:"token"`
+	TokenSignature     string   `json:"token_signature"`
+	TokenSignatureTime int64    `json:"token_signature_time,string"`
+	LocationHash       string   `json:"loc_hash"`
+	LocationRevision   int      `json:"loc_rev"`
+	IsPremium          bool     `json:"is_premium"`
+	Status             int      `json:"status"`
+	UserID             string   `json:"user_id"`
+	SessionAuthHash    string   `json:"session_auth_hash"`
+	ProxyUsername      string   `json:"proxy_username"`
+	ProxyPassword      string   `json:"proxy_password"`
+	Settings           Settings `json:"settings"`
 }
 
-type WndClient struct {
+type Client struct {
 	httpClient *http.Client
 	Mux        sync.Mutex
-	State      WndClientState
+	State      ClientState
 }
 
 type StrKV map[string]string
 
-func NewWndClient(transport http.RoundTripper) (*WndClient, error) {
+func NewClient(transport http.RoundTripper) (*Client, error) {
 	if transport == nil {
 		transport = http.DefaultTransport
 	}
 
-	return &WndClient{
+	return &Client{
 		httpClient: &http.Client{
 			Transport: transport,
 		},
-		State: WndClientState{
-			Settings: DefaultWndSettings,
+		State: ClientState{
+			Settings: DefaultSettings,
 		},
 	}, nil
 }
 
-func (c *WndClient) Session(ctx context.Context, username, password, tfacode string) error {
+func (c *Client) Session(ctx context.Context, username, password, tfacode string) error {
 	c.Mux.Lock()
 	defer c.Mux.Unlock()
 
@@ -138,7 +137,7 @@ func (c *WndClient) Session(ctx context.Context, username, password, tfacode str
 	return nil
 }
 
-func (c *WndClient) ServerCredentials(ctx context.Context) error {
+func (c *Client) ServerCredentials(ctx context.Context) error {
 	c.Mux.Lock()
 	defer c.Mux.Unlock()
 
@@ -170,7 +169,7 @@ func (c *WndClient) ServerCredentials(ctx context.Context) error {
 	return nil
 }
 
-func (c *WndClient) BestLocation(ctx context.Context) (*BestLocation, error) {
+func (c *Client) BestLocation(ctx context.Context) (*BestLocation, error) {
 	c.Mux.Lock()
 	defer c.Mux.Unlock()
 
@@ -199,7 +198,7 @@ func (c *WndClient) BestLocation(ctx context.Context) (*BestLocation, error) {
 	return output.Data, nil
 }
 
-func (c *WndClient) ServerList(ctx context.Context) (ServerList, error) {
+func (c *Client) ServerList(ctx context.Context) (ServerList, error) {
 	c.Mux.Lock()
 	defer c.Mux.Unlock()
 
@@ -226,7 +225,8 @@ func (c *WndClient) ServerList(ctx context.Context) (ServerList, error) {
 	return output.Data, nil
 }
 
-func (c *WndClient) postJSON(ctx context.Context, endpoint string, input, output interface{}) error {
+//lint:ignore U1000 Keep it for future use
+func (c *Client) postJSON(ctx context.Context, endpoint string, input, output interface{}) error {
 	var reqBuf bytes.Buffer
 	reqEncoder := json.NewEncoder(&reqBuf)
 	err := reqEncoder.Encode(input)
@@ -254,7 +254,7 @@ func (c *WndClient) postJSON(ctx context.Context, endpoint string, input, output
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		errBodyBytes, _ := ioutil.ReadAll(
+		errBodyBytes, _ := io.ReadAll(
 			&io.LimitedReader{
 				R: resp.Body,
 				N: 1024,
@@ -275,7 +275,7 @@ func (c *WndClient) postJSON(ctx context.Context, endpoint string, input, output
 	return nil
 }
 
-func (c *WndClient) postForm(ctx context.Context, endpoint string, input url.Values, output interface{}) error {
+func (c *Client) postForm(ctx context.Context, endpoint string, input url.Values, output interface{}) error {
 	req, err := http.NewRequestWithContext(
 		ctx,
 		"POST",
@@ -296,7 +296,7 @@ func (c *WndClient) postForm(ctx context.Context, endpoint string, input url.Val
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		errBodyBytes, _ := ioutil.ReadAll(
+		errBodyBytes, _ := io.ReadAll(
 			&io.LimitedReader{
 				R: resp.Body,
 				N: 1024,
@@ -317,13 +317,13 @@ func (c *WndClient) postForm(ctx context.Context, endpoint string, input url.Val
 	return nil
 }
 
-func (c *WndClient) GetProxyCredentials() (string, string) {
+func (c *Client) GetProxyCredentials() (string, string) {
 	c.Mux.Lock()
 	defer c.Mux.Unlock()
 	return c.State.ProxyUsername, c.State.ProxyPassword
 }
 
-func (c *WndClient) getJSON(ctx context.Context, requestUrl string, output interface{}) error {
+func (c *Client) getJSON(ctx context.Context, requestUrl string, output interface{}) error {
 	req, err := http.NewRequestWithContext(
 		ctx,
 		"GET",
@@ -343,7 +343,7 @@ func (c *WndClient) getJSON(ctx context.Context, requestUrl string, output inter
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		errBodyBytes, _ := ioutil.ReadAll(
+		errBodyBytes, _ := io.ReadAll(
 			&io.LimitedReader{
 				R: resp.Body,
 				N: 1024,
@@ -364,7 +364,7 @@ func (c *WndClient) getJSON(ctx context.Context, requestUrl string, output inter
 	return nil
 }
 
-func (c *WndClient) populateRequest(req *http.Request) {
+func (c *Client) populateRequest(req *http.Request) {
 	req.Header.Set("User-Agent", c.State.Settings.UserAgent)
 	req.Header.Set("Origin", c.State.Settings.Origin)
 	queryValues := req.URL.Query()
@@ -375,7 +375,7 @@ func (c *WndClient) populateRequest(req *http.Request) {
 // Does cleanup of HTTP response in order to make it reusable by keep-alive
 // logic of HTTP client
 func cleanupBody(body io.ReadCloser) {
-	io.Copy(ioutil.Discard, &io.LimitedReader{
+	_, _ = io.Copy(io.Discard, &io.LimitedReader{
 		R: body,
 		N: READ_LIMIT,
 	})
