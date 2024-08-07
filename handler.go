@@ -1,6 +1,8 @@
 package windproxy
 
 import (
+	"context"
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"strings"
@@ -15,11 +17,11 @@ type ProxyHandler struct {
 	logger        *CondLogger
 	dialer        ContextDialer
 	httptransport http.RoundTripper
-	refreshC      chan<- struct{}
+	refreshFunc   func(string, string)
 	refreshPath   string
 }
 
-func NewProxyHandler(dialer ContextDialer, logger *CondLogger, refreshC chan<- struct{}, refreshPath string) *ProxyHandler {
+func NewProxyHandler(dialer ContextDialer, logger *CondLogger, refreshFunc func(string, string), refreshPath string) *ProxyHandler {
 	httptransport := &http.Transport{
 		MaxIdleConns:          100,
 		IdleConnTimeout:       90 * time.Second,
@@ -31,13 +33,20 @@ func NewProxyHandler(dialer ContextDialer, logger *CondLogger, refreshC chan<- s
 		logger:        logger,
 		dialer:        dialer,
 		httptransport: httptransport,
-		refreshC:      refreshC,
+		refreshFunc:   refreshFunc,
 		refreshPath:   refreshPath,
 	}
 }
 
-func (s *ProxyHandler) HandleTunnel(wr http.ResponseWriter, req *http.Request) {
+type contextKey string
+
+const userKey contextKey = "user"
+const passKey contextKey = "pass"
+
+func (s *ProxyHandler) HandleTunnel(wr http.ResponseWriter, req *http.Request, user, pass string) {
 	ctx := req.Context()
+	ctx = context.WithValue(ctx, userKey, user)
+	ctx = context.WithValue(ctx, passKey, pass)
 	conn, err := s.dialer.DialContext(ctx, "tcp", req.RequestURI)
 	if err != nil {
 		_ = s.logger.Error("Can't satisfy CONNECT request: %v", err)
@@ -94,9 +103,10 @@ func (s *ProxyHandler) HandleRequest(wr http.ResponseWriter, req *http.Request) 
 
 func (s *ProxyHandler) ServeHTTP(wr http.ResponseWriter, req *http.Request) {
 	_ = s.logger.Info("Request: %v %v %v %v", req.RemoteAddr, req.Proto, req.Method, req.URL)
+	user, pass, _ := proxyBasicAuth(req)
 
 	if s.refreshPath != "" && req.Method == "GET" && req.URL.Path == s.refreshPath {
-		s.refreshC <- struct{}{}
+		s.refreshFunc(user, pass)
 		wr.WriteHeader(http.StatusOK)
 		return
 	}
@@ -109,8 +119,60 @@ func (s *ProxyHandler) ServeHTTP(wr http.ResponseWriter, req *http.Request) {
 	}
 	delHopHeaders(req.Header)
 	if isConnect {
-		s.HandleTunnel(wr, req)
+		s.HandleTunnel(wr, req, user, pass)
 	} else {
 		s.HandleRequest(wr, req)
 	}
+}
+
+// proxyBasicAuth returns the username and password provided in the request's
+// Proxy-Authorization header, if the request uses HTTP Basic Authentication.
+func proxyBasicAuth(r *http.Request) (username, password string, ok bool) {
+	auth := r.Header.Get("Proxy-Authorization")
+	if auth == "" {
+		return "", "", false
+	}
+	return parseBasicAuth(auth)
+}
+
+// parseBasicAuth parses an HTTP Basic Authentication string.
+// "Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==" returns ("Aladdin", "open sesame", true).
+func parseBasicAuth(auth string) (username, password string, ok bool) {
+	const prefix = "Basic "
+	// Case insensitive prefix match. See Issue 22736.
+	if len(auth) < len(prefix) || !asciiEqualFold(auth[:len(prefix)], prefix) {
+		return "", "", false
+	}
+	c, err := base64.StdEncoding.DecodeString(auth[len(prefix):])
+	if err != nil {
+		return "", "", false
+	}
+	cs := string(c)
+	username, password, ok = strings.Cut(cs, ":")
+	if !ok {
+		return "", "", false
+	}
+	return username, password, true
+}
+
+// asciiEqualFold is [strings.EqualFold], ASCII only. It reports whether s and t
+// are equal, ASCII-case-insensitively.
+func asciiEqualFold(s, t string) bool {
+	if len(s) != len(t) {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if lower(s[i]) != lower(t[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// lower returns the ASCII lowercase version of b.
+func lower(b byte) byte {
+	if 'A' <= b && b <= 'Z' {
+		return b + ('a' - 'A')
+	}
+	return b
 }

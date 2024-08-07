@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -32,14 +33,14 @@ type ContextDialer interface {
 }
 
 type ProxyDialer struct {
-	getAddress func() (address, tlsServerName string)
+	getAddress func(string, string) (address, tlsServerName string)
 	auth       AuthProvider
 	next       ContextDialer
 	caPool     *x509.CertPool
 	sni        string
 }
 
-func NewProxyDialer(getAddress func() (address, tlsServerName string), sni string, auth AuthProvider, caPool *x509.CertPool, nextDialer ContextDialer) *ProxyDialer {
+func NewProxyDialer(getAddress func(string, string) (address, tlsServerName string), sni string, auth AuthProvider, caPool *x509.CertPool, nextDialer ContextDialer) *ProxyDialer {
 	return &ProxyDialer{
 		getAddress: getAddress,
 		auth:       auth,
@@ -79,7 +80,7 @@ func ProxyDialerFromURL(u *url.URL, next ContextDialer) (*ProxyDialer, error) {
 			return authHeader
 		}
 	}
-	getAddress := func() (string, string) {
+	getAddress := func(string, string) (string, string) {
 		return address, tlsServerName
 	}
 	return NewProxyDialer(getAddress, "", auth, nil, next), nil
@@ -92,7 +93,17 @@ func (d *ProxyDialer) DialContext(ctx context.Context, network, address string) 
 		return nil, errors.New("bad network specified for DialContext: only tcp is supported")
 	}
 
-	addr, serverName := d.getAddress()
+	var user string
+	if v, ok := ctx.Value(userKey).(string); ok {
+		user = v
+	}
+	var pass string
+	if v, ok := ctx.Value(passKey).(string); ok {
+		pass = v
+	}
+	addr, serverName := d.getAddress(user, pass)
+
+	log.Println("Dialing", addr, "for", address, "with server name", serverName)
 
 	conn, err := d.next.DialContext(ctx, "tcp", addr)
 	if err != nil {

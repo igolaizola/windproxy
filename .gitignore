@@ -21,3 +21,4 @@ bin
 *.conf
 *.yaml
 *.json
+logs/

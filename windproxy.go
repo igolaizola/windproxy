@@ -15,6 +15,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -73,7 +74,7 @@ func Run(ctx context.Context, cfg *Config) error {
 
 	var serverList windscribe.ServerList
 
-	var proxyHostname string
+	var defaultServer *server
 	if cfg.Location != "" || cfg.Random {
 		serverList, err = wndc.ServerList(ctx)
 		if err != nil {
@@ -85,7 +86,10 @@ func Run(ctx context.Context, cfg *Config) error {
 		if !cfg.Random {
 			location = cfg.Location
 		}
-		proxyHostname = pickServer(serverList, location)
+		defaultServer, err = pickServer(serverList, location)
+		if err != nil {
+			return fmt.Errorf("couldn't pick a server: %w", err)
+		}
 	} else {
 		ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeout)
 		bestLocation, err := wndc.BestLocation(ctx)
@@ -95,16 +99,105 @@ func Run(ctx context.Context, cfg *Config) error {
 			_ = lg.main.Critical(err.Error())
 			return err
 		}
-		proxyHostname = bestLocation.Hostname
+		defaultServer = &server{
+			hostname: bestLocation.Hostname,
+			// TODO: check if this is the same as country/city
+			location: bestLocation.LocationName,
+		}
 	}
-	proxyNetAddr := net.JoinHostPort(proxyHostname, strconv.FormatUint(uint64(ASSUMED_PROXY_PORT), 10))
 
 	// Get the address and hostname dynamically
-	lck := sync.RWMutex{}
-	getAddress := func() (string, string) {
-		lck.RLock()
-		defer lck.RUnlock()
-		return proxyNetAddr, proxyHostname
+	servers := sync.Map{}
+	servers.Store("", defaultServer)
+
+	getAddress := func(key string, value string) (string, string) {
+		switch key {
+		case "random":
+			// Pick a new server
+			srv, err := pickServer(serverList, "")
+			if err != nil {
+				_ = lg.main.Error("Couldn't pick a server: %v", err)
+				return net.JoinHostPort(defaultServer.hostname, strconv.FormatUint(uint64(ASSUMED_PROXY_PORT), 10)), defaultServer.hostname
+			}
+			return net.JoinHostPort(srv.hostname, strconv.FormatUint(uint64(ASSUMED_PROXY_PORT), 10)), srv.hostname
+		case "location":
+			// Pick a new server
+			value := strings.ReplaceAll(value, "-", " ")
+			value = strings.ReplaceAll(value, "_", "/")
+			id := fmt.Sprintf("location:%s", value)
+			v, ok := servers.Load(id)
+			if !ok {
+				srv, err := pickServer(serverList, value)
+				if err != nil {
+					_ = lg.main.Error("Couldn't pick a server for %s: %v", err)
+					return net.JoinHostPort(defaultServer.hostname, strconv.FormatUint(uint64(ASSUMED_PROXY_PORT), 10)), defaultServer.hostname
+				}
+				servers.Store(id, srv)
+				return net.JoinHostPort(srv.hostname, strconv.FormatUint(uint64(ASSUMED_PROXY_PORT), 10)), srv.hostname
+			}
+			srv := v.(*server)
+			return net.JoinHostPort(srv.hostname, strconv.FormatUint(uint64(ASSUMED_PROXY_PORT), 10)), srv.hostname
+		case "id":
+			id := fmt.Sprintf("id:%s", value)
+			// Load the server
+			v, ok := servers.Load(id)
+			if !ok {
+				srv := defaultServer
+				if cfg.Random {
+					srv, err = pickServer(serverList, "")
+					if err != nil {
+						_ = lg.main.Error("Couldn't pick a server for %s: %v", id, err)
+					}
+				}
+				servers.Store(id, srv)
+				return net.JoinHostPort(srv.hostname, strconv.FormatUint(uint64(ASSUMED_PROXY_PORT), 10)), srv.hostname
+			}
+			srv := v.(*server)
+			return net.JoinHostPort(srv.hostname, strconv.FormatUint(uint64(ASSUMED_PROXY_PORT), 10)), srv.hostname
+		default:
+			v, ok := servers.Load("")
+			if !ok {
+				_ = lg.main.Error("Couldn't load the default server")
+				return net.JoinHostPort(defaultServer.hostname, strconv.FormatUint(uint64(ASSUMED_PROXY_PORT), 10)), defaultServer.hostname
+			}
+			srv := v.(*server)
+			return net.JoinHostPort(srv.hostname, strconv.FormatUint(uint64(ASSUMED_PROXY_PORT), 10)), srv.hostname
+		}
+	}
+	refreshAddress := func(key, value string) {
+		switch key {
+		case "random":
+			return
+		case "location":
+			value := strings.ReplaceAll(value, "-", " ")
+			value = strings.ReplaceAll(value, "_", "/")
+			id := fmt.Sprintf("location:%s", value)
+			srv, err := pickServer(serverList, value)
+			if err != nil {
+				_ = lg.main.Error("Couldn't pick a server for %s: %v", id, err)
+				return
+			}
+			servers.Store(id, srv)
+		case "id":
+			id := fmt.Sprintf("id:%s", value)
+			srv, err := pickServer(serverList, value)
+			if err != nil {
+				_ = lg.main.Error("Couldn't pick a server for %s: %v", id, err)
+				return
+			}
+			servers.Store(id, srv)
+		default:
+			var location string
+			if !cfg.Random {
+				location = cfg.Location
+			}
+			srv, err := pickServer(serverList, location)
+			if err != nil {
+				_ = lg.main.Error("Couldn't pick a server: %v", err)
+				return
+			}
+			servers.Store("", srv)
+		}
 	}
 
 	auth := func() string {
@@ -112,14 +205,10 @@ func Run(ctx context.Context, cfg *Config) error {
 	}
 
 	handlerDialer := NewProxyDialer(getAddress, cfg.FakeSNI, auth, caPool, dialer)
-	_ = lg.main.Info("Endpoint: %s", proxyNetAddr)
+	_ = lg.main.Info("Endpoint: %s", defaultServer.hostname)
 	_ = lg.main.Info("Starting proxy server...")
 
-	// Refresh channel for the handler
-	refreshC := make(chan struct{})
-	defer close(refreshC)
-
-	handler := NewProxyHandler(handlerDialer, lg.proxy, refreshC, cfg.RefreshPath)
+	handler := NewProxyHandler(handlerDialer, lg.proxy, refreshAddress, cfg.RefreshPath)
 	_ = lg.main.Info("Init complete.")
 
 	server := &http.Server{
@@ -133,22 +222,7 @@ func Run(ctx context.Context, cfg *Config) error {
 		}
 	}()
 
-	for {
-		select {
-		case <-refreshC:
-			// Refresh the proxy server
-			_ = lg.main.Info("Refreshing proxy server...")
-			lck.Lock()
-			// Pick a server randomly
-			proxyHostname = pickServer(serverList, "")
-			proxyNetAddr = net.JoinHostPort(proxyHostname, strconv.FormatUint(uint64(ASSUMED_PROXY_PORT), 10))
-			_ = lg.main.Info("Endpoint: %s", proxyNetAddr)
-			lck.Unlock()
-			continue
-		case <-ctx.Done():
-		}
-		break
-	}
+	<-ctx.Done()
 	_ = lg.main.Info("Shutting down...")
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -403,25 +477,34 @@ func proxyFromURLWrapper(u *url.URL, next xproxy.Dialer) (xproxy.Dialer, error) 
 	return ProxyDialerFromURL(u, cdialer)
 }
 
-func pickServer(serverList windscribe.ServerList, location string) string {
-	var candidates []string
+type server struct {
+	hostname string
+	location string
+}
+
+func pickServer(serverList windscribe.ServerList, location string) (*server, error) {
+	var candidates []*server
 	for _, country := range serverList {
 		for _, group := range country.Groups {
 			for _, host := range group.Hosts {
-				if location == "" || country.Name+"/"+group.City == location {
-					candidates = append(candidates, host.Hostname)
+				currentLocation := country.Name + "/" + group.City
+				if location == "" || location == currentLocation {
+					candidates = append(candidates, &server{
+						hostname: host.Hostname,
+						location: currentLocation,
+					})
 				}
 			}
 		}
 	}
 
 	if len(candidates) == 0 {
-		return ""
+		return nil, errors.New("no servers found")
 	}
 
 	rnd := rand.New(rand.NewSource(time.Now().UnixNano()))
 
-	return candidates[rnd.Intn(len(candidates))]
+	return candidates[rnd.Intn(len(candidates))], nil
 }
 
 var errColdInitForced = errors.New("cold init forced")
